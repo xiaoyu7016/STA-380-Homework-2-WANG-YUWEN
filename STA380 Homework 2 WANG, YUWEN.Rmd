@@ -1,0 +1,207 @@
+---
+title: "HW2"
+author: "Yuwen WANG"
+date: "Tuesday, August 18, 2015"
+output: html_document
+---
+#1
+```{r,message=F,echo=F}
+setwd("G:/McCombs/Courses-S1/Predictive Modeling/james/my folder/hw2")
+library(dplyr)
+org_abia <- read.csv("ABIA.csv")
+```
+
+NAs removal and anomalies handling:
+```{r}
+abia <-na.omit(org_abia)
+abia$DepHour <- floor(as.integer(abia$DepTime)/100)
+summary(abia$DepHour)
+abia$DepTime[abia$DepHour == 24]
+abia$DepHour[abia$DepHour==24] <- 0
+summary(abia$DepHour)
+```
+
+The graph below plots the average arrival delay and average departure deplay by hour of day in miutes. There are two interesting findings in this graph:
+  
+1. Late night delays are pretty bad. Typical hours from 0 a.m. to 5 a.m. expect average delays from 1.5 hours to 8 hours! From the graph, the best hours to avoid delays is 5 a.m to 10 a.m.
+
+2. Apart from the late night period, average arrival delays tend to be smaller than the average departure delays, which suggest pilots are able to salvage a little of the delay time during the day.
+
+```{r}
+Hour <- summarise(group_by(abia,DepHour),AvgDep = mean(DepDelay), AvgArr = mean(ArrDelay))
+plot(Hour$DepHour,Hour$AvgDep, type="b",lwd=2,col="orange",xlim=c(0,23), xlab = "Hour of Day",ylab = "Average Delay", main = "Average Delay by Hour of Day in Minutes")
+par(new=T)
+plot(Hour$DepHour,Hour$AvgArr, type="b",lwd=2,pch=17,xaxt="n",yaxt="n",xlab="",ylab="",col="blue")
+legend("topright",col=c("blue","orange"),legend = c("Arrival Delay","Departure Delay"),lwd=2)
+
+```
+
+
+#2
+## Method 1: Naive Bayes
+```{r,echo=F,message=FALSE}
+## This block 
+## 0. reads in the "tm" library
+## 1. reads in the training set and test set
+## 2. transforms and processes both sets for modeling
+
+library(tm)
+
+readerPlain = function(fname){
+  readPlain(elem=list(content=readLines(fname)),id=fname,language='en') 
+}
+
+toDenseDTM = function(aList,anInt){
+  file_list = NULL
+  labels = NULL
+  for(author in aList) {
+    author_name = substring(author, first=anInt)
+    files_to_add = Sys.glob(paste0(author, '/*.txt'))
+    file_list = append(file_list, files_to_add)
+    labels = append(labels, rep(author_name, length(files_to_add)))
+  }
+  
+  all_docs = lapply(file_list, readerPlain) 
+  names(all_docs) = file_list
+  names(all_docs) = sub('.txt', '', names(all_docs))
+  
+  my_corpus = Corpus(VectorSource(all_docs))
+  names(my_corpus) = file_list
+  
+  # Preprocessing
+  my_corpus = tm_map(my_corpus, content_transformer(tolower)) # make everything lowercase
+  my_corpus = tm_map(my_corpus, content_transformer(removeNumbers)) # remove numbers
+  my_corpus = tm_map(my_corpus, content_transformer(removePunctuation)) # remove punctuation
+  my_corpus = tm_map(my_corpus, content_transformer(stripWhitespace)) ## remove excess white-space
+  my_corpus = tm_map(my_corpus, content_transformer(removeWords), stopwords("SMART"))
+  
+  DTM = DocumentTermMatrix(my_corpus)
+  DTM = removeSparseTerms(DTM, 0.95)
+  
+}
+
+author_dirs = NULL
+left_strip = NULL
+
+Initialize_train = function(aFlag){
+  if (aFlag == T){
+    author_dirs = Sys.glob('ReutersC50/C50train/*')
+    left_strip = 21 
+  } else {
+    author_dirs = Sys.glob('ReutersC50/C50test/*')
+    left_strip = 20  
+  }
+  
+  as.matrix(toDenseDTM(author_dirs,left_strip))
+  
+}
+
+train = Initialize_train(T)
+test = Initialize_train(F)
+
+author_dirs = Sys.glob('ReutersC50/C50train/*')
+left_strip = 21 
+labels = NULL
+for(author in author_dirs) {
+  author_name = substring(author, first=left_strip)
+  files_to_add = Sys.glob(paste0(author, '/*.txt'))
+  labels = append(labels, rep(author_name, length(files_to_add)))
+}
+```
+
+### Smooth Factor
+To take care of the problem that the test set may contain some words that have never appeared in the training set before, we use additive smoothing method to allow the assignment of non-zero probabilities to words which do not occur in the sample.
+
+By definition of Naive Bayes method, for each article in the test set, we calculate a score for each author. Naive Bayes will predict the one with the highest score to be the author.
+```{r}
+smooth_count = 1/nrow(train)
+
+score_df = data.frame(labels)
+
+for (i in seq(50,2500, by=50)){
+  same_author = train[(i-50+1):i,]
+  w_smoothed = colSums(same_author + smooth_count)
+  w_same_author = w_smoothed/sum(w_smoothed)
+  
+  scores = NULL
+  for (j in 1:2500){
+    mask <- intersect(colnames(test),names(w_same_author))
+    NB_score = sum(test[j,mask]*log(w_same_author[mask]))
+    scores = append(scores,NB_score)
+  }
+  
+  score_df[,labels[i]] <- scores
+  
+}
+```
+
+```{r, echo=FALSE}
+score_df.t <-t(score_df)
+colnames(score_df.t) <-score_df.t[1,]
+score_df.t <- score_df.t[-1,]
+
+pred = NULL
+for (i in 1:2500){
+  if(names(which.max(score_df.t[,i]))==colnames(score_df.t)[i]){
+    pred = append(pred,1)
+  } else {
+    pred = append(pred,0)
+  }
+}
+
+```
+
+The  overall accuracy of Naive Bayes achieved this way is 56.28%.
+```{r}
+sum(pred)/length(pred)
+```
+
+For authors like AaronPressman, Fumikofujisaki, and 8 others, Naive Bayes achieves a very satisfactory accuracy of 75% or above.
+```{r}
+accuracy_by_author <- NULL
+for(i in seq(50,2500,by=50)){
+  pct <- sum(pred[(i-50+1):i])/length(pred[(i-50+1):i])
+ 
+  accuracy_by_author <- append(accuracy_by_author, pct)
+}
+names(accuracy_by_author) <- unique(labels)
+accuracy_by_author[accuracy_by_author>0.75]
+accuracy_by_author[accuracy_by_author<0.25]
+
+```
+However, the model does poorly with 5 authors, 4 of them with accuracy 20%, and a surprisingly low accuracy of 12% with David Lawder.
+
+
+
+
+#3
+```{r,echo=FALSE,message=F}
+library(arules)
+org_groceries <- read.transactions("groceries.txt",format = "b",rm.duplicates=T,sep=",")
+rules <- apriori(org_groceries,parameter=list(support=0.04,confidence=0.3, maxlen=5))
+```
+
+The thresholds I chose are as follow:
+
+* support = 0.04 gurantees the relation shows up at least 4% of all transactions.
+* confidence = 0.3 gurantees the RHS itemset shows up at least 30% of the time when the LHS itemset shows up
+* maxlen = 5 makes sure no itemset has more than 5 items
+
+I picked out the association rules where `lift > 1` (since lift must be bigger than 1, and `lift = 1` implies the two itemsets are independent of each other). 
+
+```{r}
+inspect(subset(rules,subset = lift>1))
+```
+By looking at the results, I uncovered a series of "very healthy" association rules.
+
+1. When "healthy" products appear in the LHS itemset, the RHS itemset will also contain "healthy" products.
+
+2. Shoppers who buy vegetables, fruits, or yoghurts are likely to end up buying whole milk.
+
+These two observations remind me of the structure of HEB and Kroger's. They both put the dairy section at one end, and put the "Vegies & Fruits" at the far opposite end. This makes sense because these "healthy shoppers" will end up purchasing from both sections, so when they travel all the way from on end to the other, they will be exposed to more items in between. 
+
+3. Another interesting point is that the association rule with highest lift is `{root vegetables -> other vegetables}`, while the other way around is filtered out. 
+
+This says shoppers looking for other vegies are not likely to look for root vegies at the same time, which reminds me of my own grocery basket: I am exactly one of those who purchase leafy vegies only! 
+
+This phenomenon may imply the shoppers' cultural background. For example, in China (where I come from), people consume way more leafy vegies than root vegies. If more shoper information is available, I will look into the 7th association rule `{other vegetables -> whole milk}` and see if that happens more frequently with international residents, and may develope some marketing strategies accordingly.
